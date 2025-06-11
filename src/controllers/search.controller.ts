@@ -19,59 +19,48 @@ import NexaApiService from '@/services/nexaApiService.js';
  * @throws {McpError} Throws an McpError (handled by `handleControllerError`) if the service call fails or returns an error.
  */
 async function searchCoin(
-	args: {
-		query?: string;
-	} = {},
+  args: {
+    query?: string;
+  } = {},
 ): Promise<ControllerResponse> {
-	const methodLogger = Logger.forContext(
-		'controllers/search.controller.ts',
-		'searchCoin',
-	);
-	methodLogger.debug(
-		`Searching for coin with query: ${args.query || 'current device'}...`,
-	);
+  const methodLogger = Logger.forContext(
+    'controllers/search.controller.ts',
+    'searchCoin',
+  );
+  methodLogger.info(
+    `Searching for coin with query: ${args.query || 'current device'}...`,
+  );
 
-	try {
-		// Detect if we're running in a test environment
-		const isTestEnvironment =
-			process.env.NODE_ENV === 'test' ||
-			process.env.JEST_WORKER_ID !== undefined;
+  try {
+    methodLogger.info(
+      `Searching for coin with query: ${args.query || 'current IP'}`,
+      {
+        query: args.query,
+        originalOptions: args,
+      },
+    );
 
-		// Special handling for test environments
-		if (isTestEnvironment) {
-			methodLogger.debug('Running in test environment');
-		}
-
-		methodLogger.debug(
-			`Searching for coin with query: ${args.query || 'current IP'}`,
-			{
-				query: args.query,
-				originalOptions: args,
-				isTestEnvironment,
-			},
-		);
-
-		try {
-			// Call the service with ipAddress and the mapped serviceOptions
-			const data = await NexaApiService.searchCoin(args.query || '');
-			methodLogger.debug(`Got the response from the service`, data);
-			return { content: JSON.stringify(data) };
-		} catch (error) {
-			methodLogger.error('Error searching for coin', error);
-			throw error;
-		}
-	} catch (error) {
-		throw handleControllerError(
-			error,
-			buildErrorContext(
-				'Coin Search',
-				'searchCoin',
-				'controllers/search.controller.ts@searchCoin',
-				args.query || 'current device',
-				{ args },
-			),
-		);
-	}
+    try {
+      // Call the service with ipAddress and the mapped serviceOptions
+      const data = await NexaApiService.searchCoin(args.query || '');
+      methodLogger.info(`Got the response from the service`, data);
+      return { content: JSON.stringify(data) };
+    } catch (error) {
+      methodLogger.error('Error searching for coin', error);
+      throw error;
+    }
+  } catch (error) {
+    throw handleControllerError(
+      error,
+      buildErrorContext(
+        'Coin Search',
+        'searchCoin',
+        'controllers/search.controller.ts@searchCoin',
+        args.query || 'current device',
+        { args },
+      ),
+    );
+  }
 }
 
 export default { searchCoin };

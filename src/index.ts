@@ -1,142 +1,121 @@
-#!/usr/bin/env node
+import express, { Request, Response } from 'express';
+import bodyParser from 'body-parser';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Logger } from './utils/logger.util.js';
-import { config } from './utils/config.util.js';
-import { createUnexpectedError } from './utils/error.util.js';
 import { VERSION, PACKAGE_NAME } from './utils/constants.util.js';
-import { runCli } from './cli/index.js';
 
 // Import tools
-import searchTools from './tools/search/search.tool.js';
 import coinDiscoveryTools from './tools/coinDiscovery/coinDiscovery.tool.js';
-import coinsDataTools from './tools/coinsData/coinsData.tool.js';
 import swapTools from './tools/swap/swap.tool.js';
 
 // Import resources
 import searchResources from './resources/search.resource.js';
-import coinDiscoveryResources from './resources/coinsDiscovery.resource.js';
 import coinsDataResources from './resources/coinsData.resource.js';
-import swapResources from './resources/swap.resources.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'crypto';
 
 // Create file-level logger
 const indexLogger = Logger.forContext('index.ts');
-
-// Log initialization at debug level
 indexLogger.debug('Nexa MCP server module loaded');
 
-let serverInstance: McpServer | null = null;
-let transportInstance: SSEServerTransport | StdioServerTransport | null = null;
+const sessions: Record<
+  string,
+  { server: McpServer; transport: StreamableHTTPServerTransport }
+> = {};
 
 /**
- * Start the MCP server with the specified transport mode
- *
- * @param mode The transport mode to use (stdio or sse)
- * @returns Promise that resolves to the server instance when started successfully
+ * Initializes and returns the MCP server instance.
  */
-export async function startServer(
-	mode: 'stdio' | 'sse' = 'stdio',
-): Promise<McpServer> {
-	const serverLogger = Logger.forContext('index.ts', 'startServer');
+function createMcpServer() {
+  const serverLogger = Logger.forContext('index.ts', 'startServer');
 
-	// Load configuration
-	serverLogger.info('Starting MCP server initialization...');
-	config.load();
-	serverLogger.info('Configuration loaded successfully');
+  serverLogger.info(`Initializing Nexa MCP server v${VERSION}`);
+  const server = new McpServer({
+    name: PACKAGE_NAME,
+    version: VERSION,
+    capabilities: {
+      tools: { listChanged: true },
+      resources: { listChanged: true },
+    },
+  });
 
-	// Enable debug logging if DEBUG is set to true
-	if (config.getBoolean('DEBUG')) {
-		serverLogger.debug('Debug mode enabled');
-	}
+  // Register resources
+  serverLogger.info('Registering MCP resources...');
+  coinsDataResources.registerResources(server);
+  searchResources.registerResources(server);
 
-	// Log the DEBUG value to verify configuration loading
-	serverLogger.debug(`DEBUG environment variable: ${process.env.DEBUG}`);
-	serverLogger.debug(
-		`IPAPI_API_TOKEN value exists: ${Boolean(process.env.IPAPI_API_TOKEN)}`,
-	);
-	serverLogger.debug(`Config DEBUG value: ${config.get('DEBUG')}`);
+  // Register tools
+  serverLogger.info('Registering MCP tools...');
+  coinDiscoveryTools.registerTools(server);
+  swapTools.registerTools(server);
 
-	serverLogger.info(`Initializing Boilerplate MCP server v${VERSION}`);
-	serverInstance = new McpServer({
-		name: PACKAGE_NAME,
-		version: VERSION,
-	});
-
-	if (mode === 'stdio') {
-		serverLogger.info('Using STDIO transport for MCP communication');
-		transportInstance = new StdioServerTransport();
-	} else {
-		throw createUnexpectedError('SSE mode is not supported yet');
-	}
-
-	// Register tools
-	serverLogger.info('Registering MCP tools...');
-	searchTools.registerTools(serverInstance);
-	coinDiscoveryTools.registerTools(serverInstance);
-	coinsDataTools.registerTools(serverInstance);
-	swapTools.registerTools(serverInstance);
-	serverLogger.debug('Registered coin search tools');
-
-	// Register resources
-	serverLogger.info('Registering MCP resources...');
-	searchResources.registerResources(serverInstance);
-	coinDiscoveryResources.registerResources(serverInstance);
-	coinsDataResources.registerResources(serverInstance);
-	swapResources.registerResources(serverInstance);
-	serverLogger.debug('Registered coin search resources');
-
-	serverLogger.info('All tools and resources registered successfully');
-
-	try {
-		serverLogger.info(`Connecting to ${mode.toUpperCase()} transport...`);
-		await serverInstance.connect(transportInstance);
-		serverLogger.info(
-			'MCP server started successfully and ready to process requests',
-		);
-		return serverInstance;
-	} catch (err) {
-		serverLogger.error(`Failed to start server`, err);
-		process.exit(1);
-	}
+  serverLogger.info('All tools and resources registered successfully');
+  return server;
 }
 
-/**
- * Main entry point - this will run when executed directly
- * Determines whether to run in CLI or server mode based on command-line arguments
- */
-async function main() {
-	const mainLogger = Logger.forContext('index.ts', 'main');
+const app = express();
+app.use(bodyParser.json());
 
-	// Load configuration
-	config.load();
+app.post('/mcp', async (req, res) => {
+  const sessionIdHeader = req.headers['mcp-session-id'];
+  let sessionEntry: {
+    server: McpServer;
+    transport: StreamableHTTPServerTransport;
+  } | null = null;
 
-	// Log the DEBUG value to verify configuration loading
-	mainLogger.debug(`DEBUG environment variable: ${process.env.DEBUG}`);
-	mainLogger.debug(
-		`IPAPI_API_TOKEN value exists: ${Boolean(process.env.IPAPI_API_TOKEN)}`,
-	);
-	mainLogger.debug(`Config DEBUG value: ${config.get('DEBUG')}`);
+  if (sessionIdHeader && sessions[sessionIdHeader as string]) {
+    sessionEntry = sessions[sessionIdHeader as string];
+  } else if (!sessionIdHeader && isInitializeRequest(req.body)) {
+    const newSessionId = randomUUID();
 
-	// Check if arguments are provided (CLI mode)
-	if (process.argv.length > 2) {
-		// CLI mode: Pass arguments to CLI runner
-		mainLogger.info('Starting in CLI mode');
-		await runCli(process.argv.slice(2));
-		mainLogger.info('CLI execution completed');
-	} else {
-		// MCP Server mode: Start server with default STDIO
-		mainLogger.info('Starting in server mode');
-		await startServer();
-		mainLogger.info('Server is now running');
-	}
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => newSessionId,
+      onsessioninitialized: (sid) => {
+        sessions[sid] = { server, transport };
+      },
+    });
+
+    transport.onclose = () => {
+      if (transport.sessionId && sessions[transport.sessionId]) {
+        delete sessions[transport.sessionId];
+      }
+    };
+
+    const server = createMcpServer();
+    await server.connect(transport);
+    sessions[newSessionId] = { server, transport };
+    sessionEntry = sessions[newSessionId as string];
+  } else {
+    res.status(400).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: 'Bad Request: No valid session ID provided',
+      },
+      id: null,
+    });
+    return;
+  }
+
+  await sessionEntry.transport.handleRequest(req, res, req.body);
+});
+
+async function handleSessionRequest(req: Request, res: Response) {
+  const sessionIdHeader = req.headers['mcp-session-id'];
+  if (!sessionIdHeader || !sessions[sessionIdHeader as string]) {
+    res.status(400).send('Invalid or missing session ID');
+    return;
+  }
+  const { transport } = sessions[sessionIdHeader as string];
+  await transport.handleRequest(req, res);
 }
 
-// If this file is being executed directly (not imported), run the main function
-if (require.main === module) {
-	main().catch((err) => {
-		const indexLogger = Logger.forContext('index.ts'); // Re-create logger for catch
-		indexLogger.error('Unhandled error in main process', err);
-		process.exit(1);
-	});
-}
+app.get('/mcp', handleSessionRequest);
+app.delete('/mcp', handleSessionRequest);
+
+const PORT = 7171;
+app.listen(PORT, () => {
+  console.log(`MCP Server listening on port ${PORT}`);
+});
